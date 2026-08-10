@@ -1,10 +1,10 @@
-from langchain_openai import ChatOpenAI
-from langchain_core.tools import tool
-import requests
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.agents import create_agent
+from langchain.tools import tool
 from langchain_community.tools import DuckDuckGoSearchRun
-from langchain.agents import create_react_agent, AgentExecutor
-from langchain import hub
 from dotenv import load_dotenv
+import os
+import requests
 
 load_dotenv()
 
@@ -12,41 +12,84 @@ search_tool = DuckDuckGoSearchRun()
 
 @tool
 def get_weather_data(city: str) -> str:
-  """
-  This function fetches the current weather data for a given city
-  """
-  url = f'https://api.weatherstack.com/current?access_key=f07d9636974c4120025fadf60678771b&query={city}'
+    """
+    Get the current weather data for a given city using OpenWeather.
+    """
 
-  response = requests.get(url)
+    api_key = os.getenv("OPENWEATHER_API_KEY")
 
-  return response.json()
+    url = "https://api.openweathermap.org/data/2.5/weather"
 
-llm = ChatOpenAI()
+    params = {
+        "q": city,
+        "appid": api_key,
+        "units": "metric"
+    }
 
-# Step 2: Pull the ReAct prompt from LangChain Hub
-prompt = hub.pull("hwchase17/react")  # pulls the standard ReAct agent prompt
+    response = requests.get(url, params=params, timeout=10)
 
-# Step 3: Create the ReAct agent manually with the pulled prompt
-agent = create_react_agent(
-    llm=llm,
-    tools=[search_tool, get_weather_data],
-    prompt=prompt
+    if response.status_code != 200:
+        return f"Could not get weather data for {city}: {response.text}"
+
+    data = response.json()
+
+    temperature = data["main"]["temp"]
+    feels_like = data["main"]["feels_like"]
+    humidity = data["main"]["humidity"]
+    description = data["weather"][0]["description"]
+
+    return (
+        f"City: {data['name']}\n"
+        f"Temperature: {temperature}°C\n"
+        f"Feels like: {feels_like}°C\n"
+        f"Humidity: {humidity}%\n"
+        f"Condition: {description}"
+    )
+
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash-lite",
+    temperature=0
 )
 
-# Step 4: Wrap it with AgentExecutor
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=[search_tool, get_weather_data],
-    verbose=True,
-    max_iterations=5
+agent = create_agent(
+    model=llm,
+    tools=[
+        search_tool,
+        get_weather_data
+    ],
+    system_prompt="""
+You are a helpful assistant with access to two tools:
+
+1. DuckDuckGo search:
+   Use it when the user asks for information that requires web search
+   or current/general factual information.
+
+2. Weather tool:
+   Use it when the user asks for current weather or temperature
+   of a city.
+
+Choose the appropriate tool based on the user's question.
+
+If a question requires multiple pieces of information, you may use
+multiple tools in sequence.
+
+After getting the required information, give the user a clear and
+concise final answer.
+"""
 )
 
-# What is the release date of Dhadak 2?
-# What is the current temp of gurgaon
-# Identify the birthplace city of Kalpana Chawla (search) and give its current temperature.
+# query = "What is the current temp of gurgaon"
+query = "Identify the birth place city of Kalpana Chawla (search) and give it's current temperature."
 
-# Step 5: Invoke
-response = agent_executor.invoke({"input": "What is the current temp of gurgaon"})
-print(response)
+response = agent.invoke(
+    {
+        "messages": [
+            {
+                "role": "user",
+                "content": query
+            }
+        ]
+    }
+)
 
-print(response['output'])
+print(response["messages"][-1].content)
